@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'level.dart';
 import 'usb_controller.dart';
 
 void main() => runApp(const AquaWatchApp());
@@ -45,11 +46,13 @@ class WatchPage extends StatefulWidget {
 
 class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   final usb = UsbController(useWifi: true);
+  final level = LevelEstimator();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    usb.addListener(_onUsb);
     if (widget.startUsb) usb.start();
   }
 
@@ -63,8 +66,31 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    usb.removeListener(_onUsb);
     usb.dispose();
     super.dispose();
+  }
+
+  void _onUsb() {
+    if (usb.hasReading) {
+      level.update(usb.value!);
+    } else {
+      level.band = null;
+    }
+  }
+
+  void _calibrate({bool? full}) {
+    setState(() {
+      if (full == null) {
+        level.clear();
+      } else if (full) {
+        level.full = usb.value;
+      } else {
+        level.empty = usb.value;
+      }
+      level.band = null;
+      _onUsb();
+    });
   }
 
   Future<void> _connect() async {
@@ -172,6 +198,71 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     ),
                     value: higher,
                     onChanged: (value) => update(() => higher = value),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Level calibration',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  ListenableBuilder(
+                    listenable: usb,
+                    builder: (context, _) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Empty · ${level.empty ?? '—'}   Full · ${level.full ?? '—'}'
+                          '${usb.hasReading ? '   Now · ${usb.value}' : ''}',
+                          style: const TextStyle(
+                            color: Color(0xFF667F7D),
+                            fontSize: 13,
+                          ),
+                        ),
+                        if (level.empty != null &&
+                            level.full != null &&
+                            !level.calibrated)
+                          const Text(
+                            'Empty and full are too close together. Recalibrate.',
+                            style: TextStyle(
+                              color: Color(0xFFBA363E),
+                              fontSize: 12,
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton(
+                              onPressed: usb.hasReading
+                                  ? () => update(() => _calibrate(full: false))
+                                  : null,
+                              child: const Text('Set empty'),
+                            ),
+                            OutlinedButton(
+                              onPressed: usb.hasReading
+                                  ? () => update(() => _calibrate(full: true))
+                                  : null,
+                              child: const Text('Set full'),
+                            ),
+                            TextButton(
+                              onPressed:
+                                  level.empty == null && level.full == null
+                                  ? null
+                                  : () => update(() => _calibrate()),
+                              child: const Text('Clear'),
+                            ),
+                          ],
+                        ),
+                        const Text(
+                          'Record empty with the sensor dry, then full with it in water up to the full mark.',
+                          style: TextStyle(
+                            color: Color(0xFF667F7D),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 16),
                   const Text(
@@ -389,6 +480,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       ),
                     ),
                     const SizedBox(height: 16),
+                    _LevelPanel(
+                      percent: usb.hasReading ? level.percent(usb.value!) : null,
+                      band: level.band,
+                      calibrated: level.calibrated,
+                    ),
+                    const SizedBox(height: 16),
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(20),
@@ -567,6 +664,90 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
       );
     },
   );
+}
+
+const levelColors = {
+  LevelBand.normal: Color(0xFF208354),
+  LevelBand.low: Color(0xFFB86E00),
+  LevelBand.high: Color(0xFFBA363E),
+};
+
+class _LevelPanel extends StatelessWidget {
+  const _LevelPanel({
+    required this.percent,
+    required this.band,
+    required this.calibrated,
+  });
+  final int? percent;
+  final LevelBand? band;
+  final bool calibrated;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = levelColors[band] ?? const Color(0xFF718582);
+    return _Panel(
+      child: Row(
+        children: [
+          // Simple tank graphic filled to the estimated level.
+          Container(
+            width: 56,
+            height: 96,
+            decoration: BoxDecoration(
+              border: Border.all(color: const Color(0xFFB9CBC8), width: 2),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            clipBehavior: Clip.antiAlias,
+            alignment: Alignment.bottomCenter,
+            child: FractionallySizedBox(
+              heightFactor: (percent ?? 0) / 100,
+              widthFactor: 1,
+              child: ColoredBox(color: color.withValues(alpha: 0.75)),
+            ),
+          ),
+          const SizedBox(width: 20),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'ESTIMATED LEVEL',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  percent == null ? '—' : '$percent%',
+                  style: TextStyle(
+                    fontSize: 40,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -1.5,
+                    color: percent == null ? null : color,
+                  ),
+                ),
+                Text(
+                  !calibrated
+                      ? 'Calibrate empty and full in Sensor settings.'
+                      : switch (band) {
+                          LevelBand.low => 'Low · below 20%',
+                          LevelBand.high => 'High · 90% or above',
+                          LevelBand.normal => 'Normal',
+                          null => 'Waiting for a live reading.',
+                        },
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: band == null ? const Color(0xFF667F7D) : color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _Panel extends StatelessWidget {
