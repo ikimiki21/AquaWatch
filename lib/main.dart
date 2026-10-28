@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'event_log.dart';
 import 'level.dart';
 import 'usb_controller.dart';
 
@@ -48,6 +50,8 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   final usb = UsbController(useWifi: true);
   final level = LevelEstimator();
   LevelBand? _alert;
+  final log = EventLog();
+  bool _wasConnected = false;
 
   @override
   void initState() {
@@ -73,12 +77,83 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   }
 
   void _onUsb() {
+    if (usb.connected != _wasConnected) {
+      _wasConnected = usb.connected;
+      if (usb.connected) {
+        log.add('connected', usb.useWifi ? 'Wi-Fi' : 'USB');
+      } else {
+        log.add('disconnected', usb.message);
+      }
+    }
     final before = level.band;
     final after = usb.hasReading ? level.update(usb.value!) : null;
     level.band = after;
     if (after == before) return;
     // Only a new low/high transition raises the banner; anything else clears it.
     _alert = after == LevelBand.low || after == LevelBand.high ? after : null;
+    final percent = usb.hasReading ? level.percent(usb.value!) : null;
+    if (_alert != null) {
+      log.add(
+        'alert',
+        '${_alert == LevelBand.high ? 'High' : 'Low'} water level ($percent%)',
+      );
+    } else if (after == LevelBand.normal &&
+        (before == LevelBand.low || before == LevelBand.high)) {
+      log.add('alert cleared', 'Level back to normal ($percent%)');
+    }
+  }
+
+  String _time(DateTime t) =>
+      [t.hour, t.minute, t.second].map((n) => '$n'.padLeft(2, '0')).join(':');
+
+  Future<void> _copyCsv() async {
+    await Clipboard.setData(ClipboardData(text: log.toCsv()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Copied ${log.events.length} events as CSV. Paste into a spreadsheet, note or email.',
+        ),
+      ),
+    );
+  }
+
+  void _showLog() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.7,
+          ),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              ListTile(
+                title: const Text(
+                  'Event log',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                ),
+                trailing: TextButton.icon(
+                  onPressed: log.events.isEmpty ? null : _copyCsv,
+                  icon: const Icon(Icons.copy_rounded, size: 18),
+                  label: const Text('Copy CSV'),
+                ),
+              ),
+              for (final e in log.events.reversed)
+                ListTile(
+                  dense: true,
+                  leading: Text(_time(e.time)),
+                  title: Text(e.type),
+                  subtitle: Text(e.detail),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _calibrate({bool? full}) {
@@ -91,6 +166,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
         level.empty = usb.value;
       }
       level.band = null;
+      log.add(
+        'calibration',
+        full == null
+            ? 'Cleared'
+            : '${full ? 'Full' : 'Empty'} set to ${usb.value}',
+      );
       _onUsb();
     });
   }
@@ -490,7 +571,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 16),
                     _LevelPanel(
-                      percent: usb.hasReading ? level.percent(usb.value!) : null,
+                      percent: usb.hasReading
+                          ? level.percent(usb.value!)
+                          : null,
                       band: level.band,
                       calibrated: level.calibrated,
                     ),
@@ -648,6 +731,56 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                     : () => usb.scan(),
                                 tooltip: 'Refresh USB devices',
                                 icon: const Icon(Icons.refresh_rounded),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _Panel(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'EVENT LOG · ${log.events.length}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1.4,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          if (log.events.isEmpty)
+                            const Text(
+                              'No events yet. Alerts and disconnects appear here.',
+                              style: TextStyle(
+                                color: Color(0xFF667F7D),
+                                fontSize: 13,
+                              ),
+                            ),
+                          for (final e in log.events.reversed.take(4))
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Text(
+                                '${_time(e.time)}  ${e.type} · ${e.detail}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              TextButton(
+                                onPressed: log.events.isEmpty ? null : _showLog,
+                                child: const Text('View all'),
+                              ),
+                              const Spacer(),
+                              TextButton.icon(
+                                onPressed: log.events.isEmpty ? null : _copyCsv,
+                                icon: const Icon(Icons.copy_rounded, size: 18),
+                                label: const Text('Copy CSV'),
                               ),
                             ],
                           ),
