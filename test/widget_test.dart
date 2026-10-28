@@ -13,9 +13,17 @@ void main() {
     expect(find.text('Wi-Fi'), findsOneWidget);
     expect(find.textContaining('Password: AquaWatch123'), findsOneWidget);
     expect(find.text('No Water Detected'), findsNothing);
+    expect(find.text('ESTIMATED LEVEL'), findsOneWidget);
+    expect(
+      find.text('Calibrate empty and full in Sensor settings.'),
+      findsOneWidget,
+    );
     await tester.tap(find.byTooltip('Sensor settings'));
     await tester.pumpAndSettle();
     expect(find.text('Detection threshold · 400'), findsOneWidget);
+    // Calibration needs a live reading.
+    final setEmpty = find.widgetWithText(OutlinedButton, 'Set empty');
+    expect(tester.widget<OutlinedButton>(setEmpty).onPressed, isNull);
     await tester.tap(find.byType(Switch));
     await tester.tap(find.text('Apply settings'));
     await tester.pumpAndSettle();
