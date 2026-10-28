@@ -15,6 +15,7 @@ void main() {
     expect(find.textContaining('Password: AquaWatch123'), findsOneWidget);
     expect(find.text('No Water Detected'), findsNothing);
     expect(find.text('ESTIMATED LEVEL'), findsOneWidget);
+    expect(find.text('EVENT LOG · 0'), findsOneWidget);
     expect(
       find.text('Calibrate empty and full in Sensor settings.'),
       findsOneWidget,
