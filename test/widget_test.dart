@@ -1,3 +1,4 @@
+import 'package:aquawatch/level.dart';
 import 'package:aquawatch/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,5 +30,21 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Waiting for sensor'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+  testWidgets('level alert banner shows low/high and dismisses', (
+    tester,
+  ) async {
+    var dismissed = false;
+    Widget banner(LevelBand band) => MaterialApp(
+      home: Scaffold(
+        body: LevelAlertBanner(band: band, onDismiss: () => dismissed = true),
+      ),
+    );
+    await tester.pumpWidget(banner(LevelBand.low));
+    expect(find.text('Low water level · below 20%'), findsOneWidget);
+    await tester.pumpWidget(banner(LevelBand.high));
+    expect(find.text('High water level · 90% or above'), findsOneWidget);
+    await tester.tap(find.byTooltip('Dismiss alert'));
+    expect(dismissed, true);
   });
 }

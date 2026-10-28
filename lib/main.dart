@@ -47,6 +47,7 @@ class WatchPage extends StatefulWidget {
 class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   final usb = UsbController(useWifi: true);
   final level = LevelEstimator();
+  LevelBand? _alert;
 
   @override
   void initState() {
@@ -72,11 +73,12 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   }
 
   void _onUsb() {
-    if (usb.hasReading) {
-      level.update(usb.value!);
-    } else {
-      level.band = null;
-    }
+    final before = level.band;
+    final after = usb.hasReading ? level.update(usb.value!) : null;
+    level.band = after;
+    if (after == before) return;
+    // Only a new low/high transition raises the banner; anything else clears it.
+    _alert = after == LevelBand.low || after == LevelBand.high ? after : null;
   }
 
   void _calibrate({bool? full}) {
@@ -340,6 +342,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (_alert != null) ...[
+                      LevelAlertBanner(
+                        band: _alert!,
+                        onDismiss: () => setState(() => _alert = null),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
                     if (!widget.startUsb) ...[
                       const Text(
                         'INTERFACE PREVIEW · USB REQUIRES ANDROID',
@@ -671,6 +680,52 @@ const levelColors = {
   LevelBand.low: Color(0xFFB86E00),
   LevelBand.high: Color(0xFFBA363E),
 };
+
+class LevelAlertBanner extends StatelessWidget {
+  const LevelAlertBanner({
+    super.key,
+    required this.band,
+    required this.onDismiss,
+  });
+  final LevelBand band;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = levelColors[band]!;
+    final high = band == LevelBand.high;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        border: Border.all(color: color),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            high ? Icons.warning_rounded : Icons.water_drop_outlined,
+            color: color,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              high
+                  ? 'High water level · 90% or above'
+                  : 'Low water level · below 20%',
+              style: TextStyle(color: color, fontWeight: FontWeight.w700),
+            ),
+          ),
+          IconButton(
+            onPressed: onDismiss,
+            tooltip: 'Dismiss alert',
+            icon: Icon(Icons.close_rounded, color: color),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _LevelPanel extends StatelessWidget {
   const _LevelPanel({
