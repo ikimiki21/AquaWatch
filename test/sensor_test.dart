@@ -23,19 +23,4 @@ void main() {
     ]);
     expect(decoder.add([255, ...utf8.encode('AQ,1,600\nAQ,1,700\n')]), [700]);
   });
-  test('higher-is-wet threshold and hysteresis', () {
-    final detector = WaterDetector();
-    expect(detector.update(100), false);
-    expect(detector.update(400), true);
-    expect(detector.update(390), true);
-    expect(detector.update(380), true);
-    expect(detector.update(379), false);
-  });
-  test('lower-is-wet threshold and hysteresis', () {
-    final detector = WaterDetector()..higherMeansWet = false;
-    expect(detector.update(800), false);
-    expect(detector.update(400), true);
-    expect(detector.update(420), true);
-    expect(detector.update(421), false);
-  });
 }

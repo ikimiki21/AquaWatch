@@ -5,39 +5,29 @@ INSTALL
 2. Open it on the phone. Allow installation from that file source if Android asks.
 3. Open AquaWatch after installation.
 
-WI-FI
-The ESP-01 and Uno need the provided Wi-Fi firmware and correct wiring first.
-Join Wi-Fi network: AquaWatch
-Wi-Fi password: AquaWatch123
-Choose Stay connected / Use this network when Android says No internet.
-In AquaWatch, select Wi-Fi and tap Connect via Wi-Fi.
-Readings refresh every second. Internet service and a router are not required.
-
-USB
-Select USB in the app, connect the Uno through a USB OTG adapter and data cable,
+CONNECT
+Connect the Uno to the phone with a USB OTG adapter and a USB data cable,
 tap Connect Arduino, and allow Android's USB permission prompt.
+The app reads the serial port only. There is no Wi-Fi, Bluetooth or network
+connection of any kind, and no internet service is used at any point.
 
-HARDWARE SETUP STILL REQUIRED FOR WI-FI
-The reported ESP-01 wiring used the Uno 3.3 V pin and no RX level converter.
-If ESP-01 VCC was moved directly to 5 V, disconnect it now: the bare ESP-01
-must receive 3.3 V, never 5 V. A 5 V input is safe only through a regulator
-or adapter that supplies 3.3 V to ESP-01 VCC.
-Correct this before enabling the Uno's Wi-Fi firmware: use an appropriate
-regulated 3.3 V supply rated for at least 500 mA, UART level conversion from
-Uno D3 to ESP RX, and common grounds. See setup/WIFI-SETUP.md.
-The Wi-Fi firmware has not been uploaded to that uncorrected wiring.
+WIRING
+Sensor: S -> A0, minus -> GND, plus -> D7 (switched on only while sampling).
+LEDs: red D10 (low water), yellow D11 (halfway), green D12 (full).
+Each LED needs its own 220-330 ohm series resistor.
+Buzzer: + -> D9, - -> GND. It beeps once a second while the tank runs low.
 
-Sensor S -> A0, minus -> GND, plus -> 5 V only for a 5 V-compatible sensor.
-LEDs: red D10, yellow D11, green D12; each needs a series resistor.
-Calibrate the threshold from actual dry/wet readings in the app's settings.
+CALIBRATE
+In the app's settings, record the reading with the probe dry (Set empty), then
+with it fully immersed (Set full). Everything between is scaled to a level of
+0 to 9. Levels 0-2 are low water, 3-6 halfway, 7-9 full. The calibration is
+sent to the Uno so the LEDs match the screen; the Uno forgets it on reset.
 
 PACKAGE CONTENTS
 - Signed release APK (production mode; no Flutter development tools needed).
-- setup/: wiring and firmware flashing instructions.
-- firmware/: Uno and ESP-01 Arduino IDE source sketches.
+- firmware/AquaWatch/AquaWatch.ino: the Arduino IDE sketch, no extra libraries.
 - SHA256SUMS.txt: APK integrity checksum.
 
-The APK signature and package are verified during packaging. Physical Wi-Fi
-operation still requires the corrected wiring and firmware uploads.
+The APK signature and package are verified during packaging.
 The private signing key remains in the project's .signing folder and is not
 included here. Keep that folder safe to sign compatible future app updates.

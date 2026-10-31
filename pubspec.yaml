@@ -1,5 +1,5 @@
 name: aquawatch
-description: Offline water monitoring with Arduino Uno over local Wi-Fi or USB.
+description: Offline water level monitoring with an Arduino Uno over USB.
 publish_to: none
 version: 1.0.0+1
 environment:
@@ -9,7 +9,6 @@ dependencies:
     sdk: flutter
   usb_serial:
     path: third_party/usb_serial
-  http: ^1.6.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

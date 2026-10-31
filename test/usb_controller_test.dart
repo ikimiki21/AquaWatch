@@ -1,3 +1,4 @@
+import 'package:aquawatch/level.dart';
 import 'package:aquawatch/usb_controller.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -72,25 +73,25 @@ void main() {
       Uint8List.fromList('AQ,1,600\r\n'.codeUnits),
     );
     expect(usb.value, 600);
-    expect(usb.detector.wet, true);
-    expect(writes, ['CFG,400,1\n']);
-    usb.configure(600, false);
+    expect(usb.level.band, LevelBand.full);
+    expect(writes, ['CAL,50,550\n']);
+    usb.configure(100, 900);
     await Future<void>.delayed(const Duration(milliseconds: 20));
-    expect(writes.last, 'CFG,600,0\n');
-    usb.configure(400, true);
+    expect(writes.last, 'CAL,100,900\n');
+    usb.configure(50, 550);
     // Use real elapsed time injection through the public timestamp for the watchdog.
     usb.lastReading = DateTime.now().subtract(const Duration(seconds: 5));
     await Future<void>.delayed(const Duration(milliseconds: 1100));
     expect(usb.connected, true);
     expect(usb.hasReading, false);
     expect(usb.value, isNull);
-    expect(usb.detector.wet, isNull);
+    expect(usb.level.band, isNull);
     await send(
       'test_port/stream',
       Uint8List.fromList('noise\nAQ,1,100\n'.codeUnits),
     );
     expect(usb.hasReading, true);
-    expect(usb.detector.wet, false);
+    expect(usb.level.band, LevelBand.low);
 
     await usb.disconnect();
     expect(usb.value, isNull);

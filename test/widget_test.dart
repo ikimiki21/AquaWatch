@@ -4,35 +4,30 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('offline screen never claims dry and calibration opens', (
+  testWidgets('offline screen never claims a level and calibration opens', (
     tester,
   ) async {
     await tester.pumpWidget(const AquaWatchApp(startUsb: false));
     expect(find.text('AquaWatch'), findsOneWidget);
     expect(find.text('Disconnected'), findsOneWidget);
     expect(find.text('Waiting for sensor'), findsOneWidget);
-    expect(find.text('Wi-Fi'), findsOneWidget);
-    expect(find.textContaining('Password: AquaWatch123'), findsOneWidget);
-    expect(find.text('No Water Detected'), findsNothing);
-    expect(find.text('ESTIMATED LEVEL'), findsOneWidget);
+    expect(find.text('Low Water'), findsNothing);
+    expect(find.text('Full'), findsNothing);
+    expect(find.text('LEVEL · 0–9'), findsOneWidget);
     expect(find.text('EVENT LOG · 0'), findsOneWidget);
-    expect(
-      find.text('Calibrate empty and full in Sensor settings.'),
-      findsOneWidget,
-    );
+    expect(find.text('Waiting for a live reading.'), findsOneWidget);
     await tester.tap(find.byTooltip('Sensor settings'));
     await tester.pumpAndSettle();
-    expect(find.text('Detection threshold · 400'), findsOneWidget);
+    expect(find.textContaining('Empty · 50   Full · 550'), findsOneWidget);
     // Calibration needs a live reading.
     final setEmpty = find.widgetWithText(OutlinedButton, 'Set empty');
     expect(tester.widget<OutlinedButton>(setEmpty).onPressed, isNull);
-    await tester.tap(find.byType(Switch));
-    await tester.tap(find.text('Apply settings'));
+    await tester.tap(find.text('Done'));
     await tester.pumpAndSettle();
     expect(find.text('Waiting for sensor'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
-  testWidgets('level alert banner shows low/high and dismisses', (
+  testWidgets('level alert banner warns on low water and dismisses', (
     tester,
   ) async {
     var dismissed = false;
@@ -42,9 +37,9 @@ void main() {
       ),
     );
     await tester.pumpWidget(banner(LevelBand.low));
-    expect(find.text('Low water level · below 20%'), findsOneWidget);
-    await tester.pumpWidget(banner(LevelBand.high));
-    expect(find.text('High water level · 90% or above'), findsOneWidget);
+    expect(find.text('Low water · refill the tank'), findsOneWidget);
+    await tester.pumpWidget(banner(LevelBand.full));
+    expect(find.text('Water level back to normal'), findsOneWidget);
     await tester.tap(find.byTooltip('Dismiss alert'));
     expect(dismissed, true);
   });

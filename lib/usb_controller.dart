@@ -1,22 +1,14 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:usb_serial/usb_serial.dart';
+import 'level.dart';
 import 'sensor.dart';
-import 'wifi_link.dart';
 import 'browser_serial_stub.dart'
     if (dart.library.js_interop) 'browser_serial_web.dart'
     as browser;
 
 class UsbController extends ChangeNotifier {
-  UsbController({this.useWifi = false, WifiLink? wifiLink})
-    : _wifi = wifiLink ?? WifiLink();
-  bool useWifi;
-  final WifiLink _wifi;
-  Timer? _wifiTimer;
-  bool _wifiPolling = false;
-  bool _wifiConfiguring = false;
-  bool _wifiActive = false;
-  final detector = WaterDetector();
+  final level = LevelEstimator();
   List<UsbDevice> devices = [];
   UsbDevice? selected;
   int? value;
@@ -61,10 +53,6 @@ class UsbController extends ChangeNotifier {
         },
       );
     }
-    if (useWifi) {
-      message =
-          'Join AquaWatch Wi-Fi (password AquaWatch123), then tap Connect.';
-    }
     _watchdog = Timer.periodic(const Duration(seconds: 1), (_) {
       final reference = lastReading ?? _openedAt;
       if (connected &&
@@ -72,7 +60,7 @@ class UsbController extends ChangeNotifier {
           DateTime.now().difference(reference) > const Duration(seconds: 4)) {
         stale = true;
         value = null;
-        detector.wet = null;
+        level.band = null;
         message = 'No readings. Check the sketch and cable, then reconnect.';
         _notify();
       }
@@ -82,7 +70,7 @@ class UsbController extends ChangeNotifier {
 
   Future<void> scan() async {
     // Browsers require a user click to choose a serial port.
-    if (kIsWeb || useWifi) return;
+    if (kIsWeb) return;
     if (_disposed || scanning) return;
     scanning = true;
     _notify();
@@ -102,88 +90,6 @@ class UsbController extends ChangeNotifier {
       if (!_disposed) message = 'Unable to scan USB devices. Try refresh.';
     } finally {
       scanning = false;
-      _notify();
-    }
-  }
-
-  Future<void> setWifiMode(bool enabled) async {
-    if (enabled == useWifi) return;
-    await disconnect();
-    if (_disposed) return;
-    useWifi = enabled;
-    message = enabled
-        ? 'Join AquaWatch Wi-Fi (password AquaWatch123), then tap Connect.'
-        : 'Connect the Arduino USB cable, then tap Connect.';
-    _notify();
-  }
-
-  Future<void> connectWifi() async {
-    if (_disposed || connecting || connected) return;
-    _wifiTimer?.cancel();
-    _wifiActive = true;
-    connecting = true;
-    message = 'Connecting to AquaWatch at 192.168.4.1…';
-    final generation = ++_generation;
-    _notify();
-    await _pollWifi(generation);
-    if (_disposed || generation != _generation) return;
-    connecting = false;
-    _wifiTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => unawaited(_pollWifi(generation)),
-    );
-    _notify();
-  }
-
-  Future<void> _pollWifi(int generation) async {
-    if (_wifiPolling || _wifiConfiguring || !_wifiActive) return;
-    _wifiPolling = true;
-    try {
-      final reading = await _wifi.read();
-      if (_disposed || generation != _generation || _wifiConfiguring) return;
-      _applyWifiReading(reading);
-    } catch (_) {
-      if (!_disposed && generation == _generation && !_wifiConfiguring) {
-        connected = false;
-        stale = true;
-        value = null;
-        detector.wet = null;
-        message =
-            'No fresh reading. Join AquaWatch Wi-Fi and choose “Stay connected” if it says no internet. Retrying…';
-      }
-    } finally {
-      _wifiPolling = false;
-      _notify();
-    }
-  }
-
-  void _applyWifiReading(WifiReading reading) {
-    connected = true;
-    stale = false;
-    value = reading.value;
-    detector.threshold = reading.threshold;
-    detector.higherMeansWet = reading.higherMeansWet;
-    detector.wet = reading.wet;
-    lastReading = DateTime.now();
-    message = 'Connected over local Wi-Fi. Readings update every second.';
-  }
-
-  Future<void> _configureWifi(int threshold, bool higherMeansWet) async {
-    if (_wifiConfiguring) return;
-    _wifiConfiguring = true;
-    final generation = _generation;
-    message = 'Applying sensor and LED settings…';
-    _notify();
-    try {
-      final reading = await _wifi.configure(threshold, higherMeansWet);
-      if (!_disposed && generation == _generation) _applyWifiReading(reading);
-    } catch (_) {
-      if (!_disposed && generation == _generation) {
-        message =
-            'Settings were not confirmed by the Uno. Check the connection and try again.';
-      }
-    } finally {
-      _wifiConfiguring = false;
       _notify();
     }
   }
@@ -222,7 +128,7 @@ class UsbController extends ChangeNotifier {
       _decoder = SensorDecoder();
       value = null;
       lastReading = null;
-      detector.wet = null;
+      level.band = null;
       stale = false;
       connected = true;
       _openedAt = DateTime.now();
@@ -285,7 +191,7 @@ class UsbController extends ChangeNotifier {
       _configurationSent = false;
       value = null;
       lastReading = null;
-      detector.wet = null;
+      level.band = null;
       stale = false;
       connected = true;
       _openedAt = DateTime.now();
@@ -305,7 +211,7 @@ class UsbController extends ChangeNotifier {
     if (_disposed || generation != _generation) return;
     for (final reading in _decoder.add(bytes)) {
       value = reading;
-      detector.update(reading);
+      level.update(reading);
       lastReading = DateTime.now();
       stale = false;
       message = 'Readings update automatically every 0.5 seconds.';
@@ -317,8 +223,7 @@ class UsbController extends ChangeNotifier {
 
   Future<void> _sendConfiguration() async {
     _configurationSent = true;
-    final command =
-        'CFG,${detector.threshold},${detector.higherMeansWet ? 1 : 0}\n';
+    final command = 'CAL,${level.empty},${level.full}\n';
     try {
       if (kIsWeb) {
         await browser.write(command);
@@ -336,8 +241,6 @@ class UsbController extends ChangeNotifier {
     String message = 'Disconnected. Tap Connect to resume.',
   }) async {
     ++_generation;
-    _wifiActive = false;
-    _wifiTimer?.cancel();
     _autoConnect = false;
     final input = _input;
     final port = _port;
@@ -349,7 +252,7 @@ class UsbController extends ChangeNotifier {
     value = null;
     lastReading = null;
     stale = false;
-    detector.wet = null;
+    level.band = null;
     this.message = message;
     _notify();
     await input?.cancel();
@@ -357,15 +260,11 @@ class UsbController extends ChangeNotifier {
     if (kIsWeb) await browser.disconnect();
   }
 
-  void configure(int threshold, bool higherMeansWet) {
-    if (useWifi && connected) {
-      unawaited(_configureWifi(threshold.clamp(20, 1003), higherMeansWet));
-      return;
-    }
-    detector.threshold = threshold.clamp(20, 1003);
-    detector.higherMeansWet = higherMeansWet;
-    detector.wet = null;
-    if (hasReading) detector.update(value!);
+  void configure(int empty, int full) {
+    level.empty = empty.clamp(0, 1023);
+    level.full = full.clamp(0, 1023);
+    level.band = null;
+    if (hasReading) level.update(value!);
     if (connected) unawaited(_sendConfiguration());
     _notify();
   }
@@ -387,8 +286,6 @@ class UsbController extends ChangeNotifier {
     _disposed = true;
     ++_generation;
     _watchdog?.cancel();
-    _wifiTimer?.cancel();
-    _wifi.close();
     unawaited(_events?.cancel());
     unawaited(_input?.cancel());
     unawaited(_close(_port));

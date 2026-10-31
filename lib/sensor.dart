@@ -26,24 +26,3 @@ class SensorDecoder {
     return readings;
   }
 }
-
-// Hysteresis prevents warning/normal flicker near the threshold.
-class WaterDetector {
-  int threshold = 400;
-  bool higherMeansWet = true;
-  bool? wet;
-  static const hysteresis = 20;
-
-  bool update(int value) {
-    if (wet == null) {
-      wet = higherMeansWet ? value >= threshold : value <= threshold;
-    } else if (higherMeansWet) {
-      if (value >= threshold) wet = true;
-      if (value < threshold - hysteresis) wet = false;
-    } else {
-      if (value <= threshold) wet = true;
-      if (value > threshold + hysteresis) wet = false;
-    }
-    return wet!;
-  }
-}

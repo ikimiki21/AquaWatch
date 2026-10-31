@@ -1,56 +1,63 @@
-// AquaWatch: Uno R3 and a 3-pin analog moisture/water sensor.
-// + -> module's rated supply (5V for a 5V-compatible module)
-// - -> GND; S -> A0. USB supplies the Uno.
-// Set to 1 AFTER adding a suitable ESP power supply and RX level converter.
-#ifndef AQUAWATCH_ENABLE_WIFI
-#define AQUAWATCH_ENABLE_WIFI 0
-#endif
-#if AQUAWATCH_ENABLE_WIFI
-#include <SoftwareSerial.h>
-SoftwareSerial wifi(2, 3); // Uno RX <- ESP TX; Uno TX -> level shifter -> ESP RX.
-#endif
+// AquaWatch: Uno R3 and a 3-pin analog water level sensor.
+// - -> GND; S -> A0. USB supplies the Uno; there is no battery.
 const byte SENSOR_PIN = A0;
+// Pins follow the documented layout: LEDs on D10/D11/D12, buzzer on D9.
+// Red marks low water, which is the state worth warning about in a tank.
 const byte RED_LED = 10;
 const byte YELLOW_LED = 11;
 const byte GREEN_LED = 12;
-// Buzzer: + -> D8, - -> GND. D8 avoids D2/D3 (Wi-Fi serial) and the LEDs.
-const byte BUZZER_PIN = 8;
+// Buzzer: + -> D9, - -> GND. tone() drives it from Timer2, which only costs
+// analogWrite on D3/D11; the LEDs here are switched with digitalWrite.
+const byte BUZZER_PIN = 9;
+// The sensor "+" is driven from D7 rather than 5V, so the probe is energised
+// only while a sample is taken. Constant DC across an immersion probe corrodes
+// it. The module must draw no more than the 20 mA a pin is rated to supply.
+const byte SENSOR_POWER_PIN = 7;
+// Settling time for the probe and the ADC input after powering up.
+const unsigned long SENSOR_WARMUP_MS = 10;
 // 1 = passive buzzer (driven with a tone; also works on an active one).
 // 0 = active buzzer (has its own oscillator; just switched on and off).
 #ifndef AQUAWATCH_PASSIVE_BUZZER
 #define AQUAWATCH_PASSIVE_BUZZER 1
 #endif
-const unsigned int BEEP_HZ = 2000;
-const unsigned long BEEP_MS = 200;
+const unsigned int BEEP_HZ = 1000;
+const unsigned long BEEP_MS = 100;
 unsigned long beepStarted = 0;
 bool beeping = false;
 bool beepThisSample = false;
 const unsigned long SAMPLE_INTERVAL_MS = 500;
 unsigned long lastSample = 0;
-int threshold = 400;
-bool higherMeansWet = true;
-bool wet = false;
-bool firstReading = true;
+// Empirical baselines: dry contacts read about 50, full immersion about 550.
+// The app overrides both with CAL after it connects.
+int emptyRaw = 50;
+int fullRaw = 550;
+// Level 3 and level 7 begin here, in thousandths of the calibrated span.
+const int LOW_EDGE = 300;
+const int FULL_EDGE = 700;
+// A band holds until the reading clears its boundary by this much, so a level
+// resting on an edge cannot flicker the LEDs.
+const int BAND_MARGIN = 20;
+const byte BAND_NONE = 0;
+const byte BAND_LOW = 1;
+const byte BAND_HALFWAY = 2;
+const byte BAND_FULL = 3;
+byte band = BAND_NONE;
 char command[24];
 byte commandLength = 0;
 bool discardCommand = false;
-#if AQUAWATCH_ENABLE_WIFI
-char wifiCommand[24];
-byte wifiCommandLength = 0;
-bool discardWifiCommand = false;
-#endif
 
 void readSettings(Stream &source, char *buffer, byte &length, bool &discard) {
   while (source.available()) {
     const char c = source.read();
     if (c == '\n') {
       buffer[length] = '\0';
-      int newThreshold, direction;
-      if (!discard && sscanf(buffer, "CFG,%d,%d", &newThreshold, &direction) == 2 &&
-          newThreshold >= 20 && newThreshold <= 1003 && (direction == 0 || direction == 1)) {
-        threshold = newThreshold;
-        higherMeansWet = direction == 1;
-        firstReading = true;
+      int newEmpty, newFull;
+      if (!discard && sscanf(buffer, "CAL,%d,%d", &newEmpty, &newFull) == 2 &&
+          newEmpty >= 0 && newEmpty <= 1023 && newFull >= 0 &&
+          newFull <= 1023 && abs(newFull - newEmpty) >= 10) {
+        emptyRaw = newEmpty;
+        fullRaw = newFull;
+        band = BAND_NONE;
       }
       length = 0;
       discard = false;
@@ -59,6 +66,25 @@ void readSettings(Stream &source, char *buffer, byte &length, bool &discard) {
       else discard = true;
     }
   }
+}
+
+// Thousandths of the way from empty to full; works whichever way the sensor
+// reads, because the span carries the sign.
+long permilleOf(int value) {
+  const long span = (long)fullRaw - emptyRaw;
+  if (span == 0) return 0;
+  return ((long)value - emptyRaw) * 1000L / span;
+}
+
+byte bandFor(long permille) {
+  if (band == BAND_LOW && permille < LOW_EDGE + BAND_MARGIN) return BAND_LOW;
+  if (band == BAND_FULL && permille >= FULL_EDGE - BAND_MARGIN) return BAND_FULL;
+  if (band == BAND_HALFWAY && permille >= LOW_EDGE - BAND_MARGIN &&
+      permille < FULL_EDGE + BAND_MARGIN)
+    return BAND_HALFWAY;
+  if (permille < LOW_EDGE) return BAND_LOW;
+  if (permille < FULL_EDGE) return BAND_HALFWAY;
+  return BAND_FULL;
 }
 
 void buzzer(bool on) {
@@ -73,6 +99,8 @@ void buzzer(bool on) {
 
 void setup() {
   pinMode(SENSOR_PIN, INPUT);
+  pinMode(SENSOR_POWER_PIN, OUTPUT);
+  digitalWrite(SENSOR_POWER_PIN, LOW);
   pinMode(RED_LED, OUTPUT);
   pinMode(YELLOW_LED, OUTPUT);
   pinMode(GREEN_LED, OUTPUT);
@@ -80,60 +108,45 @@ void setup() {
   digitalWrite(BUZZER_PIN, LOW);
   digitalWrite(YELLOW_LED, HIGH);
   Serial.begin(9600);
-#if AQUAWATCH_ENABLE_WIFI
-  wifi.begin(9600);
-#endif
 }
 
 void loop() {
   readSettings(Serial, command, commandLength, discardCommand);
-#if AQUAWATCH_ENABLE_WIFI
-  readSettings(wifi, wifiCommand, wifiCommandLength, discardWifiCommand);
-#endif
   const unsigned long now = millis();
   if (beeping && now - beepStarted >= BEEP_MS) buzzer(false);
   if (now - lastSample < SAMPLE_INTERVAL_MS) return;
   lastSample = now;
-  // Average eight samples to reduce small electrical fluctuations.
+  // Energise the probe only for the sample, then average eight readings to
+  // reduce small electrical fluctuations.
+  digitalWrite(SENSOR_POWER_PIN, HIGH);
+  delay(SENSOR_WARMUP_MS);
   long total = 0;
   for (byte i = 0; i < 8; i++) {
     total += analogRead(SENSOR_PIN);
     delay(2);
   }
+  digitalWrite(SENSOR_POWER_PIN, LOW);
   const int value = total / 8;
-  // Same threshold and 20-point hysteresis as the Flutter app.
-  if (firstReading) {
-    wet = higherMeansWet ? value >= threshold : value <= threshold;
-    firstReading = false;
-  } else if (higherMeansWet) {
-    if (value >= threshold) wet = true;
-    if (value < threshold - 20) wet = false;
-  } else {
-    if (value <= threshold) wet = true;
-    if (value > threshold + 20) wet = false;
-  }
-  const bool nearThreshold = !wet && abs(value - threshold) <= 40;
-  digitalWrite(RED_LED, wet ? HIGH : LOW);
-  digitalWrite(YELLOW_LED, nearThreshold ? HIGH : LOW);
-  digitalWrite(GREEN_LED, !wet && !nearThreshold ? HIGH : LOW);
-  // Short beep once a second (every other sample) while water is detected.
-  beepThisSample = wet && !beepThisSample;
+  // Same scale and boundaries the app uses, so the LEDs and the screen agree.
+  const long permille = permilleOf(value);
+  long level = permille / 100;
+  if (level < 0) level = 0;
+  if (level > 9) level = 9;
+  band = bandFor(permille);
+  digitalWrite(RED_LED, band == BAND_LOW ? HIGH : LOW);
+  digitalWrite(YELLOW_LED, band == BAND_HALFWAY ? HIGH : LOW);
+  digitalWrite(GREEN_LED, band == BAND_FULL ? HIGH : LOW);
+  // Short beep once a second (every other sample) while the tank runs low.
+  // Level 0 beeps too: an empty tank is the most urgent case, not a quiet one.
+  beepThisSample = band == BAND_LOW && !beepThisSample;
   if (beepThisSample) {
     buzzer(true);
     beepStarted = now;
-  } else if (beeping && !wet) {
+  } else if (beeping && band != BAND_LOW) {
     buzzer(false);
   }
   // Versioned ASCII frame terminated by CRLF; no libraries required.
-  // The app sends CFG,<threshold>,<1=higher-is-wet,0=lower-is-wet> to sync LEDs.
+  // The app sends CAL,<empty>,<full> to keep the LEDs on the same scale.
   Serial.print(F("AQ,1,"));
   Serial.println(value);
-#if AQUAWATCH_ENABLE_WIFI
-  // ESP receives the actual threshold and detection state from the Uno.
-  wifi.print(F("AQ,2,"));
-  wifi.print(value);
-  wifi.print(','); wifi.print(threshold);
-  wifi.print(','); wifi.print(higherMeansWet ? 1 : 0);
-  wifi.print(','); wifi.println(wet ? 1 : 0);
-#endif
 }

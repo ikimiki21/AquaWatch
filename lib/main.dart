@@ -47,9 +47,10 @@ class WatchPage extends StatefulWidget {
 }
 
 class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
-  final usb = UsbController(useWifi: true);
-  final level = LevelEstimator();
+  final usb = UsbController();
+  LevelEstimator get level => usb.level;
   LevelBand? _alert;
+  LevelBand? _lastBand;
   final log = EventLog();
   bool _wasConnected = false;
 
@@ -80,26 +81,22 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
     if (usb.connected != _wasConnected) {
       _wasConnected = usb.connected;
       if (usb.connected) {
-        log.add('connected', usb.useWifi ? 'Wi-Fi' : 'USB');
+        log.add('connected', 'USB');
       } else {
         log.add('disconnected', usb.message);
       }
     }
-    final before = level.band;
-    final after = usb.hasReading ? level.update(usb.value!) : null;
-    level.band = after;
+    final before = _lastBand;
+    final after = usb.hasReading ? level.band : null;
     if (after == before) return;
-    // Only a new low/high transition raises the banner; anything else clears it.
-    _alert = after == LevelBand.low || after == LevelBand.high ? after : null;
-    final percent = usb.hasReading ? level.percent(usb.value!) : null;
+    _lastBand = after;
+    // Only low water raises the banner; a full tank is the normal outcome.
+    _alert = after == LevelBand.low ? after : null;
+    final reading = usb.hasReading ? level.levelOf(usb.value!) : null;
     if (_alert != null) {
-      log.add(
-        'alert',
-        '${_alert == LevelBand.high ? 'High' : 'Low'} water level ($percent%)',
-      );
-    } else if (after == LevelBand.normal &&
-        (before == LevelBand.low || before == LevelBand.high)) {
-      log.add('alert cleared', 'Level back to normal ($percent%)');
+      log.add('alert', 'Low water (level $reading of 9)');
+    } else if (before == LevelBand.low && after != null) {
+      log.add('alert cleared', 'Level recovered (level $reading of 9)');
     }
   }
 
@@ -158,20 +155,23 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 
   void _calibrate({bool? full}) {
     setState(() {
+      final reading = usb.value;
       if (full == null) {
-        level.clear();
+        level.reset();
+      } else if (reading == null) {
+        return;
       } else if (full) {
-        level.full = usb.value;
+        level.full = reading;
       } else {
-        level.empty = usb.value;
+        level.empty = reading;
       }
-      level.band = null;
       log.add(
         'calibration',
         full == null
-            ? 'Cleared'
-            : '${full ? 'Full' : 'Empty'} set to ${usb.value}',
+            ? 'Reset to ${level.empty}/${level.full}'
+            : '${full ? 'Full' : 'Empty'} set to $reading',
       );
+      usb.configure(level.empty, level.full);
       _onUsb();
     });
   }
@@ -185,10 +185,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
           ),
         ),
       );
-      return;
-    }
-    if (usb.useWifi) {
-      await usb.connectWifi();
       return;
     }
     if (kIsWeb) {
@@ -238,8 +234,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   }
 
   void _settings() {
-    var threshold = usb.detector.threshold.toDouble();
-    var higher = usb.detector.higherMeansWet;
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -258,52 +252,24 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'Check the dry and wet readings, then set a threshold between them.',
+                    'Record the reading with the probe dry, then with it fully '
+                    'immersed. Everything else is scaled between those two.',
                   ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Detection threshold · ${threshold.round()}',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  Slider(
-                    value: threshold,
-                    min: 20,
-                    max: 1003,
-                    divisions: 983,
-                    label: '${threshold.round()}',
-                    onChanged: (value) => update(() => threshold = value),
-                  ),
-                  SwitchListTile.adaptive(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Higher value means wet'),
-                    subtitle: const Text(
-                      'Turn off if the reading drops when water touches the sensor.',
-                    ),
-                    value: higher,
-                    onChanged: (value) => update(() => higher = value),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Level calibration',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 20),
                   ListenableBuilder(
                     listenable: usb,
                     builder: (context, _) => Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Empty · ${level.empty ?? '—'}   Full · ${level.full ?? '—'}'
+                          'Empty · ${level.empty}   Full · ${level.full}'
                           '${usb.hasReading ? '   Now · ${usb.value}' : ''}',
                           style: const TextStyle(
                             color: Color(0xFF667F7D),
                             fontSize: 13,
                           ),
                         ),
-                        if (level.empty != null &&
-                            level.full != null &&
-                            !level.calibrated)
+                        if (!level.calibrated)
                           const Text(
                             'Empty and full are too close together. Recalibrate.',
                             style: TextStyle(
@@ -311,7 +277,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                               fontSize: 12,
                             ),
                           ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 12),
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,
@@ -329,38 +295,28 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                               child: const Text('Set full'),
                             ),
                             TextButton(
-                              onPressed:
-                                  level.empty == null && level.full == null
-                                  ? null
-                                  : () => update(() => _calibrate()),
-                              child: const Text('Clear'),
+                              onPressed: () => update(() => _calibrate()),
+                              child: const Text('Reset'),
                             ),
                           ],
-                        ),
-                        const Text(
-                          'Record empty with the sensor dry, then full with it in water up to the full mark.',
-                          style: TextStyle(
-                            color: Color(0xFF667F7D),
-                            fontSize: 12,
-                          ),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 16),
                   const Text(
-                    'A 20-point stability margin reduces flicker. Settings reset when the app restarts.',
+                    'Levels 0–2 are low water and sound the buzzer, 3–6 are '
+                    'halfway, 7–9 are full. The board uses the same scale, so '
+                    'the LEDs match the screen. Calibration is sent to the Uno '
+                    'and resets when it restarts.',
                     style: TextStyle(color: Color(0xFF667F7D), fontSize: 13),
                   ),
                   const SizedBox(height: 24),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      onPressed: () {
-                        usb.configure(threshold.round(), higher);
-                        Navigator.pop(context);
-                      },
-                      child: const Text('Apply settings'),
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Done'),
                     ),
                   ),
                 ],
@@ -376,17 +332,14 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: usb,
     builder: (context, _) {
-      final wet = usb.hasReading ? usb.detector.wet : null;
-      final statusColor = wet == null
-          ? const Color(0xFF718582)
-          : wet
-          ? const Color(0xFFBA363E)
-          : const Color(0xFF208354);
-      final statusBackground = wet == null
-          ? const Color(0xFFEDF2F1)
-          : wet
-          ? const Color(0xFFFFEEEE)
-          : const Color(0xFFEBF7EF);
+      final band = usb.hasReading ? level.band : null;
+      final statusColor = levelColors[band] ?? const Color(0xFF718582);
+      final statusBackground = switch (band) {
+        LevelBand.low => const Color(0xFFFFEEEE),
+        LevelBand.halfway => const Color(0xFFFFF6E8),
+        LevelBand.full => const Color(0xFFEBF7EF),
+        null => const Color(0xFFEDF2F1),
+      };
       return Scaffold(
         appBar: AppBar(
           titleSpacing: 24,
@@ -456,35 +409,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       style: TextStyle(color: Color(0xFF667F7D), fontSize: 15),
                     ),
                     const SizedBox(height: 20),
-                    SegmentedButton<bool>(
-                      segments: const [
-                        ButtonSegment(
-                          value: true,
-                          label: Text('Wi-Fi'),
-                          icon: Icon(Icons.wifi_rounded),
-                        ),
-                        ButtonSegment(
-                          value: false,
-                          label: Text('USB'),
-                          icon: Icon(Icons.usb_rounded),
-                        ),
-                      ],
-                      selected: {usb.useWifi},
-                      onSelectionChanged: usb.connecting
-                          ? null
-                          : (selection) => usb.setWifiMode(selection.first),
-                    ),
-                    if (usb.useWifi) ...[
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Join AquaWatch in your Wi-Fi settings.\nPassword: AquaWatch123 · No internet needed',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF667F7D),
-                          height: 1.5,
-                        ),
-                      ),
-                    ],
                     const SizedBox(height: 28),
                     _Panel(
                       child: Column(
@@ -499,7 +423,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                               const SizedBox(width: 8),
                               const Expanded(
                                 child: Text(
-                                  'MOISTURE READING',
+                                  'WATER LEVEL',
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w700,
@@ -571,10 +495,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 16),
                     _LevelPanel(
+                      reading: usb.hasReading
+                          ? level.levelOf(usb.value!)
+                          : null,
                       percent: usb.hasReading
                           ? level.percent(usb.value!)
                           : null,
-                      band: level.band,
+                      band: band,
                       calibrated: level.calibrated,
                     ),
                     const SizedBox(height: 16),
@@ -588,11 +515,13 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                       child: Row(
                         children: [
                           Icon(
-                            wet == null
-                                ? Icons.hourglass_empty_rounded
-                                : wet
-                                ? Icons.warning_amber_rounded
-                                : Icons.check_circle_outline_rounded,
+                            switch (band) {
+                              null => Icons.hourglass_empty_rounded,
+                              LevelBand.low => Icons.warning_amber_rounded,
+                              LevelBand.halfway => Icons.water_drop_rounded,
+                              LevelBand.full =>
+                                Icons.check_circle_outline_rounded,
+                            },
                             color: statusColor,
                             size: 28,
                           ),
@@ -602,13 +531,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  wet == null
-                                      ? (usb.stale
-                                            ? 'Reading unavailable'
-                                            : 'Waiting for sensor')
-                                      : wet
-                                      ? 'Water Detected'
-                                      : 'No Water Detected',
+                                  switch (band) {
+                                    null =>
+                                      usb.stale
+                                          ? 'Reading unavailable'
+                                          : 'Waiting for sensor',
+                                    LevelBand.low => 'Low Water',
+                                    LevelBand.halfway => 'Halfway',
+                                    LevelBand.full => 'Full',
+                                  },
                                   style: TextStyle(
                                     color: statusColor,
                                     fontSize: 16,
@@ -617,11 +548,15 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  wet == null
-                                      ? 'Status will appear with a live reading.'
-                                      : wet
-                                      ? 'Warning · water is present'
-                                      : 'Normal · sensor is dry',
+                                  switch (band) {
+                                    null =>
+                                      'Status will appear with a live reading.',
+                                    LevelBand.low =>
+                                      'Warning · the tank is running out',
+                                    LevelBand.halfway =>
+                                      'Normal · about half full',
+                                    LevelBand.full => 'Normal · near capacity',
+                                  },
                                   style: TextStyle(
                                     color: statusColor,
                                     fontSize: 12,
@@ -640,12 +575,7 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                         children: [
                           Row(
                             children: [
-                              Icon(
-                                usb.useWifi
-                                    ? Icons.wifi_rounded
-                                    : Icons.usb_rounded,
-                                color: teal,
-                              ),
+                              const Icon(Icons.usb_rounded, color: teal),
                               const SizedBox(width: 10),
                               const Expanded(
                                 child: Text(
@@ -703,8 +633,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                   icon: Icon(
                                     usb.connected
                                         ? Icons.link_off_rounded
-                                        : usb.useWifi
-                                        ? Icons.wifi_rounded
                                         : Icons.usb_rounded,
                                     size: 20,
                                   ),
@@ -713,8 +641,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                         ? 'Disconnect'
                                         : usb.connecting
                                         ? 'Connecting…'
-                                        : usb.useWifi
-                                        ? 'Connect via Wi-Fi'
                                         : 'Connect Arduino',
                                   ),
                                 ),
@@ -724,7 +650,6 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
                                 onPressed:
                                     !widget.startUsb ||
                                         kIsWeb ||
-                                        usb.useWifi ||
                                         usb.scanning ||
                                         usb.connecting
                                     ? null
@@ -809,9 +734,9 @@ class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
 }
 
 const levelColors = {
-  LevelBand.normal: Color(0xFF208354),
-  LevelBand.low: Color(0xFFB86E00),
-  LevelBand.high: Color(0xFFBA363E),
+  LevelBand.low: Color(0xFFBA363E),
+  LevelBand.halfway: Color(0xFFB86E00),
+  LevelBand.full: Color(0xFF208354),
 };
 
 class LevelAlertBanner extends StatelessWidget {
@@ -826,7 +751,7 @@ class LevelAlertBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = levelColors[band]!;
-    final high = band == LevelBand.high;
+    final low = band == LevelBand.low;
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 4, 8),
       decoration: BoxDecoration(
@@ -837,15 +762,15 @@ class LevelAlertBanner extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-            high ? Icons.warning_rounded : Icons.water_drop_outlined,
+            low ? Icons.warning_rounded : Icons.water_drop_outlined,
             color: color,
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              high
-                  ? 'High water level · 90% or above'
-                  : 'Low water level · below 20%',
+              low
+                  ? 'Low water · refill the tank'
+                  : 'Water level back to normal',
               style: TextStyle(color: color, fontWeight: FontWeight.w700),
             ),
           ),
@@ -862,10 +787,12 @@ class LevelAlertBanner extends StatelessWidget {
 
 class _LevelPanel extends StatelessWidget {
   const _LevelPanel({
+    required this.reading,
     required this.percent,
     required this.band,
     required this.calibrated,
   });
+  final int? reading;
   final int? percent;
   final LevelBand? band;
   final bool calibrated;
@@ -898,7 +825,7 @@ class _LevelPanel extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'ESTIMATED LEVEL',
+                  'LEVEL · 0–9',
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
@@ -907,21 +834,21 @@ class _LevelPanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  percent == null ? '—' : '$percent%',
+                  reading == null ? '—' : '$reading',
                   style: TextStyle(
                     fontSize: 40,
                     fontWeight: FontWeight.w700,
                     letterSpacing: -1.5,
-                    color: percent == null ? null : color,
+                    color: reading == null ? null : color,
                   ),
                 ),
                 Text(
                   !calibrated
-                      ? 'Calibrate empty and full in Sensor settings.'
+                      ? 'Empty and full are too close. Recalibrate.'
                       : switch (band) {
-                          LevelBand.low => 'Low · below 20%',
-                          LevelBand.high => 'High · 90% or above',
-                          LevelBand.normal => 'Normal',
+                          LevelBand.low => 'Low water · levels 0–2',
+                          LevelBand.halfway => 'Halfway · levels 3–6',
+                          LevelBand.full => 'Full · levels 7–9',
                           null => 'Waiting for a live reading.',
                         },
                   style: TextStyle(

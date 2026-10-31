@@ -1,49 +1,59 @@
-// Estimated water level from two calibration readings (empty and full).
-enum LevelBand { normal, low, high }
+// Water depth on the documented 0-9 scale, from two calibration readings.
+// Empirical baselines: dry contacts read about 50, full immersion about 550.
+enum LevelBand { low, halfway, full }
 
 class LevelEstimator {
-  int? empty;
-  int? full;
+  int empty = defaultEmpty;
+  int full = defaultFull;
   LevelBand? band;
-  static const lowBelow = 20;
-  static const highAt = 90;
-  // Percentage points a level must recover by before leaving low/high,
-  // so a reading hovering on a boundary cannot spam alerts.
-  static const margin = 3;
+
+  static const defaultEmpty = 50;
+  static const defaultFull = 550;
+  // Level 3 and level 7 begin here: the boundaries between the three states.
+  static const lowEdge = 0.3;
+  static const fullEdge = 0.7;
   // Calibration points closer than this are too noisy to scale between.
   static const minSpan = 10;
+  // Fraction of the span a reading must clear before the band changes, so a
+  // level resting on a boundary cannot flicker the LEDs.
+  static const margin = 0.02;
 
-  bool get calibrated =>
-      empty != null && full != null && (full! - empty!).abs() >= minSpan;
+  bool get calibrated => (full - empty).abs() >= minSpan;
 
   // Works whether the sensor reads higher or lower when wet.
+  double? _ratio(int value) =>
+      calibrated ? (value - empty) / (full - empty) : null;
+
+  // 0 is dry, 9 is fully immersed.
+  int? levelOf(int value) {
+    final ratio = _ratio(value);
+    return ratio == null ? null : (ratio * 10).floor().clamp(0, 9);
+  }
+
   int? percent(int value) {
-    if (!calibrated) return null;
-    final ratio = (value - empty!) / (full! - empty!);
-    return (ratio * 100).round().clamp(0, 100);
+    final ratio = _ratio(value);
+    return ratio == null ? null : (ratio * 100).round().clamp(0, 100);
   }
 
   LevelBand? update(int value) {
-    final level = percent(value);
-    if (level == null) {
-      band = null;
-    } else if (level >= highAt) {
-      band = LevelBand.high;
-    } else if (level < lowBelow) {
-      band = LevelBand.low;
-    } else if (band == LevelBand.high && level >= highAt - margin) {
-      // Still high until it drops clear of the margin.
-    } else if (band == LevelBand.low && level < lowBelow + margin) {
-      // Still low until it rises clear of the margin.
-    } else {
-      band = LevelBand.normal;
-    }
-    return band;
+    final ratio = _ratio(value);
+    if (ratio == null) return band = null;
+    // A band holds until the reading clears its boundary by the margin.
+    return band = switch (band) {
+      LevelBand.low when ratio < lowEdge + margin => LevelBand.low,
+      LevelBand.full when ratio >= fullEdge - margin => LevelBand.full,
+      LevelBand.halfway
+          when ratio >= lowEdge - margin && ratio < fullEdge + margin =>
+        LevelBand.halfway,
+      _ when ratio < lowEdge => LevelBand.low,
+      _ when ratio < fullEdge => LevelBand.halfway,
+      _ => LevelBand.full,
+    };
   }
 
-  void clear() {
-    empty = null;
-    full = null;
+  void reset() {
+    empty = defaultEmpty;
+    full = defaultFull;
     band = null;
   }
 }
